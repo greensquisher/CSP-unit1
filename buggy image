@@ -1,0 +1,31 @@
+# CODE TO ADD
+#   a116_buggy_image.py
+import turtle as trtl
+# instead of a descriptive name of the turtle such as painter,
+# a less useful variable name x is used
+x = trtl.Turtle()
+x.pensize(40)
+x.circle(20)
+legs = 12
+leg_length = 70
+degrees = 360 / legs
+x.pensize(5)
+leg_count = 4
+while (leg_count < legs):
+  x.goto(0,20)
+  x.setheading(degrees*leg_count)
+  x.forward(leg_length)
+  leg_count = leg_count + 1
+
+x.goto(0,30)
+x.color("white")
+x.fd(1)
+x.penup()
+x.fd(20)
+x.pendown()
+x.fd(1)
+
+
+x.hideturtle()
+wn = trtl.Screen()
+wn.mainloop()
