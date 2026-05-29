@@ -1,0 +1,94 @@
+import math
+import tkinter as tk
+
+# Initial Variables
+v, m, d, t = 0.0, 10.0, 0.0, 0.0
+mi, mf = 10.0, 1.0
+g = -9.81 # Fixed to a float value (removed quotes)
+burn = 10
+dt = 0.1
+engine_is_running = False
+
+def update_physics(f, i):
+    global v, m, d, engine_is_running
+    
+    # 1. Air Density & Drag
+    rho = 1.22 * math.exp((-9.81 * 0.029 * d) / (8.3 * 288)) 
+    drag_force = 0.5 * rho * (v**2) * 0.25 * 0.1
+    drag_accel = drag_force / m
+    
+    # 2. Drag Direction
+    direction_of_drag = -1.0 if v > 0 else 1.0
+    if abs(v) < 0.1:
+        direction_of_drag = 0.0
+        
+    # 3. Acceleration
+    applied_thrust = (f / m) if (engine_is_running and i < (burn / dt)) else 0
+    a = applied_thrust + g + (drag_accel * direction_of_drag)
+    
+    # 4. Update Velocity and Position
+    v += a * dt
+    d += v * dt
+    if d < 0:
+        d = 0
+        v = 0
+
+        
+    # 5. Mass Fuel Burn
+    if engine_is_running and i < (burn / dt):
+        m -= ((mi - mf) / (burn / dt))
+
+def run_simulation(i=0):
+    global t, engine_is_running
+    if d > 0 or i < (burn / dt) or engine_is_running:
+        update_physics(20000, i)
+        t += dt
+        Time_var.set(f"Time: {round(t, 1)}s")
+        Distance_var.set(f"Distance: {round(d, 1)}m")
+        Velocity_var.set(f"Velocity: {round(v, 1)}m/s")
+        Mass_var.set(f"Mass: {round(m, 1)}kg")
+        canvas.coords(ground, 5, 200 + .01*d, 400, 300 + .01*d)
+        root.after(int(dt * 1000), run_simulation, i + 1)
+    else:
+        # Final update when the rocket hits the ground
+        Distance_var.set("Distance: 0.0m")
+        Velocity_var.set("Velocity: 0.0m/s")
+        engine_is_running = False
+
+def ignite_or_toggle(event=None):
+    global v, m, d, t, engine_is_running
+    if engine_is_running:
+        # Turn engine off
+        engine_is_running = False
+    else:
+        # Ignite/Restart the engine if we are on the ground
+        if d == 0:
+            v, m, d, t = 0.0, 10.0, 0.1, 0.0
+            engine_is_running = True
+            run_simulation(0)
+
+# GUI Setup
+root = tk.Tk()
+root.title("Rocket Sim")
+root.configure(background="yellow")
+root.minsize(200, 200)
+
+Time_var = tk.StringVar(value="Time: 0.0s")
+Distance_var = tk.StringVar(value="Distance: 0.0m")
+Velocity_var = tk.StringVar(value="Velocity: 0.0m/s")
+Mass_var = tk.StringVar(value="Mass: 10.0kg")
+
+tk.Label(root, textvariable=Time_var, bg="yellow").pack()
+tk.Label(root, textvariable=Distance_var, bg="yellow").pack()
+tk.Label(root, textvariable=Velocity_var, bg="yellow").pack()
+tk.Label(root, textvariable=Mass_var, bg="yellow").pack()
+
+canvas = tk.Canvas(root, width=400, height=300, bg="skyblue")
+# Bind space to ignite or restart (if grounded)
+canvas.bind("<space>", ignite_or_toggle)
+canvas.pack()
+canvas.focus_set()
+
+ground = canvas.create_rectangle(5, 200, 400, 300, outline="green", width=2, fill="green")
+
+root.mainloop()
