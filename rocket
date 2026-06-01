@@ -1,94 +1,300 @@
 import math
 import tkinter as tk
+from tkinter import messagebox
+import json
+import os
 
-# Initial Variables
-v, m, d, t = 0.0, 10.0, 0.0, 0.0
-mi, mf = 10.0, 1.0
-g = -9.81 # Fixed to a float value (removed quotes)
-burn = 10
+# --- File Settings ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "rocket_config.json")
+
+# --- Initial Variables ---
+v, d, t = 0.0, 0.0, 0.0
 dt = 0.1
 engine_is_running = False
+current_stage = 0
+stage_time = 0.0
 
-def update_physics(f, i):
-    global v, m, d, engine_is_running
-    
-    # 1. Air Density & Drag
-    rho = 1.22 * math.exp((-9.81 * 0.029 * d) / (8.3 * 288)) 
-    drag_force = 0.5 * rho * (v**2) * 0.25 * 0.1
-    drag_accel = drag_force / m
-    
-    # 2. Drag Direction
-    direction_of_drag = -1.0 if v > 0 else 1.0
-    if abs(v) < 0.1:
-        direction_of_drag = 0.0
-        
-    # 3. Acceleration
-    applied_thrust = (f / m) if (engine_is_running and i < (burn / dt)) else 0
-    a = applied_thrust + g + (drag_accel * direction_of_drag)
-    
-    # 4. Update Velocity and Position
-    v += a * dt
-    d += v * dt
-    if d < 0:
-        d = 0
-        v = 0
+stage_vars = []  # Holds the active Tkinter variables for the GUI entries
+stages = []      # Holds the active physics dictionaries
+m = 0.0
 
-        
-    # 5. Mass Fuel Burn
-    if engine_is_running and i < (burn / dt):
-        m -= ((mi - mf) / (burn / dt))
+default_stages = [
+    {"wet_mass": 10.0, "dry_mass": 3.0, "burn_time": 10.0, "ve": 22000.0},
+    {"wet_mass": 3.0, "dry_mass": 1.0, "burn_time": 8.0, "ve": 26000.0}
+]
 
-def run_simulation(i=0):
-    global t, engine_is_running
-    if d > 0 or i < (burn / dt) or engine_is_running:
-        update_physics(20000, i)
-        t += dt
-        Time_var.set(f"Time: {round(t, 1)}s")
-        Distance_var.set(f"Distance: {round(d, 1)}m")
-        Velocity_var.set(f"Velocity: {round(v, 1)}m/s")
-        Mass_var.set(f"Mass: {round(m, 1)}kg")
-        canvas.coords(ground, 5, 200 + .01*d, 400, 300 + .01*d)
-        root.after(int(dt * 1000), run_simulation, i + 1)
+CANVAS_WIDTH = 400
+CANVAS_HEIGHT = 300
+TARGET_ALTITUDE_METERS = 100000 * 0.3048  
+TOTAL_GRADIENT_HEIGHT = 900
+TOTAL_SCROLL_PIXELS = TOTAL_GRADIENT_HEIGHT 
+
+# --- File Management Helpers ---
+def load_configuration():
+    """Loads stages from JSON file, fallback to defaults if missing."""
+    global stages, m
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                stages = json.load(f)
+        except Exception:
+            stages = list(default_stages)
     else:
-        # Final update when the rocket hits the ground
-        Distance_var.set("Distance: 0.0m")
-        Velocity_var.set("Velocity: 0.0m/s")
-        engine_is_running = False
+        stages = list(default_stages)
+    m = stages[0]["wet_mass"]
+
+def save_configuration():
+    """Saves the current active stages list to a JSON file."""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(stages, f, indent=4)
+    except Exception as e:
+        messagebox.showerror("File Error", f"Could not save configuration: {e}")
+
+# --- Physics & Graphics Engines ---
+def lerp_color(color1, color2, factor):
+    r = int(color1[0] + (color2[0] - color1[0]) * factor)
+    g = int(color1[1] + (color2[1] - color1[1]) * factor)
+    b = int(color1[2] + (color2[2] - color1[2]) * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def draw_sky_gradient():
+    SPACE, HIGH_ATMOS, SEA_LEVEL = (5, 5, 10), (0, 50, 140), (100, 200, 255)
+    mid_point = TOTAL_GRADIENT_HEIGHT // 2
+    for y in range(TOTAL_GRADIENT_HEIGHT):
+        if y < mid_point:
+            factor = y / mid_point
+            color = lerp_color(SPACE, HIGH_ATMOS, factor)
+        else:
+            factor = (y - mid_point) / (TOTAL_GRADIENT_HEIGHT - mid_point)
+            color = lerp_color(HIGH_ATMOS, SEA_LEVEL, factor)
+        initial_y_offset = y - (TOTAL_GRADIENT_HEIGHT - CANVAS_HEIGHT)
+        canvas.create_line(0, initial_y_offset, CANVAS_WIDTH, initial_y_offset, fill=color, tags="sky")
+
+def update_physics():
+    global v, m, d, current_stage, stage_time, engine_is_running
+
+    stage = stages[current_stage]
+    dry_mass = stage["dry_mass"]
+    exhaust_velocity = stage["ve"]
+    mdot = (stage["wet_mass"] - dry_mass) / stage["burn_time"]
+
+    rho = 1.225 * math.exp(-d / 8500.0)
+    drag_force = 0.5 * rho * 0.5 * 0.01 * v * abs(v)
+
+    thrust = 0.0
+    if engine_is_running:
+        if m > dry_mass:
+            thrust = mdot * exhaust_velocity
+            m -= mdot * dt
+            stage_time += dt
+            if m < dry_mass: m = dry_mass
+        else:
+            if current_stage < len(stages) - 1:
+                current_stage += 1
+                stage_time = 0.0
+                m = stages[current_stage]["wet_mass"]
+                print(f"Stage {current_stage + 1} ignition")
+            else:
+                engine_is_running = False 
+
+    g_local = 9.81 * (6371000.0 / (6371000.0 + d))**2
+    net_force = thrust - (m * g_local) - drag_force
+    v += (net_force / m) * dt
+    d += v * dt
+
+    if d <= 0:
+        d, v, engine_is_running = 0.0, 0.0, False
+
+def run_simulation():
+    global t
+    if d > 0 or engine_is_running:
+        old_d = d
+        update_physics()
+        t += dt
+        
+        Time_var.set(f"Time: {t:.1f}s")
+        Distance_var.set(f"Distance: {d:.1f}m ({d * 3.28084:.0f} ft)")
+        Velocity_var.set(f"Velocity: {v:.1f}m/s")
+        Mass_var.set(f"Mass: {m:.1f}kg")
+        Stage_var.set(f"Stage: {current_stage + 1}")
+        
+        if old_d < TARGET_ALTITUDE_METERS:
+            clamped_d = min(d, TARGET_ALTITUDE_METERS)
+            clamped_old_d = min(old_d, TARGET_ALTITUDE_METERS)
+            current_pixel_pos = (clamped_d / TARGET_ALTITUDE_METERS) * TOTAL_SCROLL_PIXELS
+            old_pixel_pos = (clamped_old_d / TARGET_ALTITUDE_METERS) * TOTAL_SCROLL_PIXELS
+            canvas.move("sky", 0, current_pixel_pos - old_pixel_pos)
+            
+        canvas.coords(ground, 5, 200 + (0.01 * d), CANVAS_WIDTH, 300 + (0.01 * d))
+        root.after(int(dt * 1000), run_simulation)
 
 def ignite_or_toggle(event=None):
-    global v, m, d, t, engine_is_running
+    global v, m, d, t, engine_is_running, current_stage, stage_time
     if engine_is_running:
-        # Turn engine off
         engine_is_running = False
-    else:
-        # Ignite/Restart the engine if we are on the ground
-        if d == 0:
-            v, m, d, t = 0.0, 10.0, 0.1, 0.0
-            engine_is_running = True
-            run_simulation(0)
+    elif d == 0:
+        canvas.delete("sky")
+        draw_sky_gradient()
+        canvas.tag_lower("sky") 
+        current_stage, stage_time, v, d, t, engine_is_running = 0, 0.0, 0.0, 0.1, 0.0, True
+        m = stages[0]["wet_mass"]
+        run_simulation()
 
-# GUI Setup
+# --- Smart Real-Time GUI Generation ---
+def rebuild_stage_rows(*args):
+    """Dynamically adds or removes rows in real-time while preserving current typed data."""
+    global stage_vars
+    
+    try:
+        target_count = stage_count_var.get()
+    except tk.TclError:
+        return  # Ignore structural update if user completely deleted the spinbox text temporarily
+        
+    target_count = max(1, min(target_count, 10))
+    current_count = len(stage_vars)
+
+    if target_count == current_count:
+        return
+
+    if target_count > current_count:
+        save_current_ui_to_memory()
+        
+        for i in range(current_count, target_count):
+            if i < len(stages):
+                src = stages[i]
+            else:
+                src = {"wet_mass": 5.0, "dry_mass": 1.5, "burn_time": 5.0, "ve": 2000.0}
+
+            row = tk.LabelFrame(rows_container, text=f"Stage {i+1}", bg="lightgray")
+            row.pack(fill="x", padx=5, pady=2)
+
+            wet_var = tk.DoubleVar(value=src["wet_mass"])
+            dry_var = tk.DoubleVar(value=src["dry_mass"])
+            burn_var = tk.DoubleVar(value=src["burn_time"])
+            ve_var = tk.DoubleVar(value=src["ve"])
+
+            stage_vars.append({"wet_mass": wet_var, "dry_mass": dry_var, "burn_time": burn_var, "ve": ve_var, "frame": row})
+
+            tk.Label(row, text="Wet", bg="lightgray").grid(row=0, column=0, padx=2)
+            tk.Entry(row, textvariable=wet_var, width=5).grid(row=0, column=1, padx=2)
+
+            tk.Label(row, text="Dry", bg="lightgray").grid(row=0, column=2, padx=2)
+            tk.Entry(row, textvariable=dry_var, width=5).grid(row=0, column=3, padx=2)
+
+            tk.Label(row, text="Burn", bg="lightgray").grid(row=0, column=4, padx=2)
+            tk.Entry(row, textvariable=burn_var, width=5).grid(row=0, column=5, padx=2)
+
+            tk.Label(row, text="Exhaust Velocity", bg="lightgray").grid(row=0, column=6, padx=2)
+            tk.Entry(row, textvariable=ve_var, width=7).grid(row=0, column=7, padx=2)
+
+    elif target_count < current_count:
+        save_current_ui_to_memory()
+        for _ in range(current_count - target_count):
+            removed_stage = stage_vars.pop()
+            removed_stage["frame"].destroy()
+
+def save_current_ui_to_memory():
+    """Reads what is currently typed inside the UI elements and temporarily caches it."""
+    global stages
+    temp_stages = []
+    for s in stage_vars:
+        try:
+            temp_stages.append({
+                "wet_mass": s["wet_mass"].get(),
+                "dry_mass": s["dry_mass"].get(),
+                "burn_time": s["burn_time"].get(),
+                "ve": s["ve"].get()
+            })
+        except tk.TclError:
+            temp_stages.append({"wet_mass": 5.0, "dry_mass": 1.5, "burn_time": 5.0, "ve": 20000.0})
+    stages = temp_stages
+
+def apply_settings():
+    global stages, m
+    new_stages = []
+    
+    for i, s in enumerate(stage_vars):
+        try:
+            wet = s["wet_mass"].get()
+            dry = s["dry_mass"].get()
+            burn = s["burn_time"].get()
+            ve = s["ve"].get()
+        except tk.TclError:
+            messagebox.showerror("Input Error", f"Stage {i+1} fields must contain valid numbers.")
+            return
+
+        if wet <= 0 or dry <= 0 or burn <= 0 or ve <= 0:
+            messagebox.showerror("Input Error", f"Stage {i+1} parameters must be greater than zero.")
+            return
+        if dry >= wet:
+            messagebox.showerror("Physical Error", f"Stage {i+1}: Dry Mass cannot equal or exceed Wet Mass.")
+            return
+            
+        # --- Structural Stage-to-Stage Validation ---
+        if i > 0:
+            previous_dry_mass = new_stages[i-1]["dry_mass"]
+            if wet > previous_dry_mass:
+                messagebox.showerror(
+                    "Staging Error", 
+                    f"Configuration Violation:\n\n"
+                    f"Stage {i+1} Total Mass ({wet}kg) cannot be greater than Stage {i} Dry Mass ({previous_dry_mass}kg).\n\n"
+                    f"An upper stage cannot weigh more than the structural housing supporting it!"
+                )
+                return
+
+        new_stages.append({"wet_mass": wet, "dry_mass": dry, "burn_time": burn, "ve": ve})
+        
+    stages = new_stages
+    m = stages[0]["wet_mass"]
+    Mass_var.set(f"Mass: {m:.1f}kg")
+    
+    save_configuration()
+    messagebox.showinfo("Success", "Configuration saved and updated!")
+
+# --- GUI Setup ---
 root = tk.Tk()
 root.title("Rocket Sim")
 root.configure(background="yellow")
-root.minsize(200, 200)
+
+load_configuration()
+
+control_frame = tk.LabelFrame(root, text="Rocket Configuration", bg="lightgray")
+control_frame.pack(fill="x", padx=5, pady=5)
+
+action_row = tk.Frame(control_frame, bg="lightgray")
+action_row.pack(fill="x", pady=5)
+
+tk.Label(action_row, text="Stages Count:", bg="lightgray").pack(side="left", padx=5)
+stage_count_var = tk.IntVar(value=len(stages))
+
+spin = tk.Spinbox(action_row, from_=1, to=10, textvariable=stage_count_var, width=3, command=rebuild_stage_rows)
+spin.pack(side="left", padx=5)
+stage_count_var.trace_add("write", rebuild_stage_rows)
+
+tk.Button(action_row, text="Apply & Save Configuration", command=apply_settings).pack(side="right", padx=10)
+
+rows_container = tk.Frame(control_frame, bg="lightgray")
+rows_container.pack(fill="x", expand=True)
+
+rebuild_stage_rows()
 
 Time_var = tk.StringVar(value="Time: 0.0s")
-Distance_var = tk.StringVar(value="Distance: 0.0m")
+Distance_var = tk.StringVar(value="Distance: 0.0m (0 ft)")
 Velocity_var = tk.StringVar(value="Velocity: 0.0m/s")
-Mass_var = tk.StringVar(value="Mass: 10.0kg")
+Mass_var = tk.StringVar(value=f"Mass: {m:.1f}kg")
+Stage_var = tk.StringVar(value="Stage: 1")
 
-tk.Label(root, textvariable=Time_var, bg="yellow").pack()
-tk.Label(root, textvariable=Distance_var, bg="yellow").pack()
-tk.Label(root, textvariable=Velocity_var, bg="yellow").pack()
-tk.Label(root, textvariable=Mass_var, bg="yellow").pack()
+for var in (Time_var, Distance_var, Velocity_var, Mass_var, Stage_var):
+    tk.Label(root, textvariable=var, bg="yellow", font=("Arial", 12)).pack()
 
-canvas = tk.Canvas(root, width=400, height=300, bg="skyblue")
-# Bind space to ignite or restart (if grounded)
-canvas.bind("<space>", ignite_or_toggle)
-canvas.pack()
+canvas = tk.Canvas(root, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="#05050a", highlightthickness=0)
+canvas.pack(pady=10)
 canvas.focus_set()
+canvas.bind("<space>", ignite_or_toggle)
 
-ground = canvas.create_rectangle(5, 200, 400, 300, outline="green", width=2, fill="green")
+draw_sky_gradient()
+ground = canvas.create_rectangle(5, 200, CANVAS_WIDTH, 300, outline="green", width=2, fill="green")
 
 root.mainloop()
